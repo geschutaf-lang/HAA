@@ -9,7 +9,7 @@ import plotly.express as px
 st.set_page_config(page_title="HAA Quant Dashboard", layout="wide")
 
 CANARY    = ['TIP']
-OFFENSIVE = ['SPY', 'IWM', 'VEA', 'VWO', 'IEF', 'TLT', 'VNQ', 'PDBC',' QQQ' ]
+OFFENSIVE = ['SPY', 'IWM', 'VEA', 'VWO', 'IEF', 'TLT', 'VNQ', 'PDBC','QQQ' ]
 DEFENSIVE = ['IEF', 'BIL', 'GLD','PDBC']
 TOP_N     = 4
 MOM_PERIODS = [1, 3, 6, 12]
