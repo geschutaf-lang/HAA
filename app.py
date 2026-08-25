@@ -4,37 +4,49 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import plotly.express as px
+import warnings
+
+warnings.filterwarnings('ignore')
 
 # --- 설정 ---
 st.set_page_config(page_title="HAA Quant Dashboard", layout="wide")
 
-CANARY    = ['TIP']
-OFFENSIVE = ['SPY', 'IWM', 'VEA', 'VWO', 'IEF', 'TLT', 'VNQ', 'PDBC','QQQ' ]
-DEFENSIVE = ['IEF', 'BIL', 'GLD','PDBC']
-TOP_N     = 4
+CANARY = ['TIP']
+OFFENSIVE = ['SPY', 'IWM', 'VEA', 'VWO', 'IEF', 'TLT', 'VNQ', 'PDBC', 'QQQ']
+DEFENSIVE = ['IEF', 'BIL', 'GLD', 'PDBC']
+TOP_N = 4
 MOM_PERIODS = [1, 3, 6, 12]
 
 # --- 함수 정의 ---
-@st.cache_data(ttl=86400)  # ✅ 수정: 3600 → 86400 (월별 전략에 맞게 하루 단위 캐시)
+@st.cache_data(ttl=86400)
 def get_monthly_prices(tickers):
-    # ✅ 수정: OFFENSIVE + DEFENSIVE 모두 다운로드 (방어 모드 시 데이터 누락 방지)
     all_tickers = list(set(tickers + CANARY + DEFENSIVE))
-    # ✅ 수정: 15mo → 3y (12개월 모멘텀 계산 + 여유 데이터 확보)
-    raw = yf.download(all_tickers, period='3y', auto_adjust=True, progress=False)['Close']
-    monthly = raw.resample('ME').last()
+    # 12개월 모멘텀 계산을 충분히 보장하기 위해 5년 데이터 수집
+    raw = yf.download(all_tickers, period='5y', auto_adjust=True, progress=False)
+    
+    if isinstance(raw.columns, pd.MultiIndex):
+        prices = raw['Close']
+    else:
+        prices = raw[['Close']]
+        
+    monthly = prices.resample('ME').last()
     return monthly
 
 def calc_momentum(prices, ticker):
+    if ticker not in prices.columns:
+        return None, {}
+        
     latest = prices[ticker].dropna()
     if len(latest) < 13:
         return None, {}
+        
     scores = {}
-    total = 0
+    total = 0.0
     for n in MOM_PERIODS:
         ret = latest.iloc[-1] / latest.iloc[-1 - n] - 1
         scores[f'{n}개월'] = ret
         total += ret
-    # ✅ 수정: 합산 → 평균 (Keller식 평균 모멘텀)
+        
     avg_mom = total / len(MOM_PERIODS)
     return avg_mom, scores
 
@@ -47,17 +59,26 @@ if st.sidebar.button('데이터 새로고침'):
 
 with st.spinner('금융 데이터를 불러오는 중...'):
     prices = get_monthly_prices(OFFENSIVE)
+    if prices.empty:
+        st.error("주가 데이터를 가져오는 데 실패했습니다. 잠시 후 다시 시도해 주세요.")
+        st.stop()
     today = prices.index[-1].date()
 
 # 1단계: 카나리아 지표 확인
 tip_total, tip_detail = calc_momentum(prices, 'TIP')
 
 st.header(f"1단계: TIP 카나리아 지표 확인 ({today})")
+
+# TIP 데이터 누락 방어 로직
+if tip_total is None or pd.isna(tip_total):
+    st.error("❌ TIP(물가연동채) 데이터를 충분히 수집하지 못해 모멘텀을 계산할 수 없습니다. 데이터 새로고침을 눌러주세요.")
+    st.stop()
+
 col1, col2 = st.columns([1, 2])
 
 with col1:
     tip_score_pct = tip_total * 100
-    st.metric("TIP 평균 모멘텀 스코어", f"{tip_score_pct:+.2f}%")  # ✅ 수정: 라벨 변경 (합산→평균)
+    st.metric("TIP 평균 모멘텀 스코어", f"{tip_score_pct:+.2f}%")
 
     if tip_total > 0:
         st.success("✅ 판정: 공격 모드 (Offensive)")
@@ -67,12 +88,13 @@ with col1:
         regime = 'defensive'
 
 with col2:
-    # TIP 상세 모멘텀 차트
     tip_df = pd.DataFrame(list(tip_detail.items()), columns=['기간', '수익률'])
     tip_df['수익률'] = tip_df['수익률'] * 100
-    fig_tip = px.bar(tip_df, x='기간', y='수익률', text_auto='.2f',
-                     title="TIP 기간별 수익률 (%)",
-                     color='수익률', color_continuous_scale='RdYlGn')
+    fig_tip = px.bar(
+        tip_df, x='기간', y='수익률', text_auto='.2f',
+        title="TIP 기간별 수익률 (%)",
+        color='수익률', color_continuous_scale='RdYlGn'
+    )
     st.plotly_chart(fig_tip, use_container_width=True)
 
 st.divider()
@@ -86,17 +108,23 @@ results = []
 for ticker in target_universe:
     total, detail = calc_momentum(prices, ticker)
     if total is not None:
-        res = {'티커': ticker, '평균 모멘텀(%)': total * 100}  # ✅ 수정: 컬럼명 변경
+        res = {'티커': ticker, '평균 모멘텀(%)': total * 100}
         for k, v in detail.items():
             res[k] = v * 100
         results.append(res)
 
-res_df = pd.DataFrame(results).sort_values(by='평균 모멘텀(%)', ascending=False)  # ✅ 수정: 컬럼명 맞춤
+if not results:
+    st.warning("분석할 수 있는 자산 데이터가 없습니다.")
+    st.stop()
+
+res_df = pd.DataFrame(results).sort_values(by='평균 모멘텀(%)', ascending=False)
 res_df = res_df.reset_index(drop=True)
 
 # 순위 부여 및 시각화
-st.dataframe(res_df.style.format(precision=2).background_gradient(subset=['평균 모멘텀(%)'], cmap='RdYlGn'),
-             use_container_width=True)
+st.dataframe(
+    res_df.style.format(precision=2).background_gradient(subset=['평균 모멘텀(%)'], cmap='RdYlGn'),
+    use_container_width=True
+)
 
 st.divider()
 
@@ -107,9 +135,10 @@ action_col1, action_col2 = st.columns(2)
 with action_col1:
     if regime == 'offensive':
         top4_list = res_df.head(TOP_N)['티커'].tolist()
-        st.subheader("매수 대상 (각 25%)")
+        st.subheader(f"매수 대상 (상위 {len(top4_list)}개 자산 균등 배분)")
+        weight = 100.0 / len(top4_list) if top4_list else 0
         for i, t in enumerate(top4_list):
-            st.info(f"{i+1}. {t} (25.0%)")
+            st.info(f"{i+1}. {t} ({weight:.1f}%)")
     else:
         best_def = res_df.iloc[0]['티커']
         st.subheader("매수 대상 (100%)")
